@@ -66,7 +66,7 @@ func (k *KrbAttestorPlugin) spiffeID(krbCreds gokrb_creds.Credentials) *url.URL 
 	return id
 }
 
-func (k *KrbAttestorPlugin) FetchAttestationData(ctx context.Context, req *nodeattestor.FetchAttestationDataRequest) (*nodeattestor.FetchAttestationDataResponse, error) {
+func (k *KrbAttestorPlugin) FetchAttestationData(stream nodeattestor.FetchAttestationData_PluginStream) error {
 	var buf bytes.Buffer
 
 	krbClient := gokrb_client.NewClientWithKeytab(k.username, k.realm, k.keytab)
@@ -75,38 +75,32 @@ func (k *KrbAttestorPlugin) FetchAttestationData(ctx context.Context, req *nodea
 
 	err := krbClient.Login()
 	if err != nil {
-		err = krbc.AttestationStepError("[KRB_AS_REQ] logging in", err)
-		return &nodeattestor.FetchAttestationDataResponse{}, err
+		return krbc.AttestationStepError("[KRB_AS_REQ] logging in", err)
 	}
 
 	serviceTkt, encryptionKey, err := krbClient.GetServiceTicket(k.spireSPN)
 	if err != nil {
-		err = krbc.AttestationStepError("[KRB_TGS_REQ] requesting service ticket", err)
-		return &nodeattestor.FetchAttestationDataResponse{}, err
+		return krbc.AttestationStepError("[KRB_TGS_REQ] requesting service ticket", err)
 	}
 
 	authenticator, err := gokrb_types.NewAuthenticator(krbClient.Credentials.Domain(), krbClient.Credentials.CName)
 	if err != nil {
-		err = krbc.AttestationStepError("[KRB_AP_REQ] building Kerberos authenticator", err)
-		return &nodeattestor.FetchAttestationDataResponse{}, err
+		return krbc.AttestationStepError("[KRB_AP_REQ] building Kerberos authenticator", err)
 	}
 
 	encryptionType, err := gokrb_crypto.GetEtype(encryptionKey.KeyType)
 	if err != nil {
-		err = krbc.AttestationStepError("[KRB_AP_REQ] getting encryption key type", err)
-		return &nodeattestor.FetchAttestationDataResponse{}, err
+		return krbc.AttestationStepError("[KRB_AP_REQ] getting encryption key type", err)
 	}
 
 	err = authenticator.GenerateSeqNumberAndSubKey(encryptionType.GetETypeID(), encryptionType.GetKeyByteSize())
 	if err != nil {
-		err = krbc.AttestationStepError("[KRB_AP_REQ] generating authenticator sequence number and subkey", err)
-		return &nodeattestor.FetchAttestationDataResponse{}, err
+		return krbc.AttestationStepError("[KRB_AP_REQ] generating authenticator sequence number and subkey", err)
 	}
 
 	krbAPReq, err := gokrb_msgs.NewAPReq(serviceTkt, encryptionKey, authenticator)
 	if err != nil {
-		err = krbc.AttestationStepError("[KRB_AP_REQ] building KRB_AP_REQ", err)
-		return &nodeattestor.FetchAttestationDataResponse{}, err
+		return krbc.AttestationStepError("[KRB_AP_REQ] building KRB_AP_REQ", err)
 	}
 
 	attestedData := &krbc.KrbAttestedData{
@@ -115,20 +109,23 @@ func (k *KrbAttestorPlugin) FetchAttestationData(ctx context.Context, req *nodea
 	enc := gob.NewEncoder(&buf)
 	err = enc.Encode(attestedData)
 	if err != nil {
-		err = krbc.AttestationStepError("encoding KRB_AP_REQ for transport", err)
-		return &nodeattestor.FetchAttestationDataResponse{}, err
+		return krbc.AttestationStepError("encoding KRB_AP_REQ for transport", err)
 	}
 
-	data := &common.AttestedData{
+	data := &common.AttestationData{
 		Type: pluginName,
 		Data: buf.Bytes(),
 	}
 	resp := &nodeattestor.FetchAttestationDataResponse{
-		AttestedData: data,
-		SpiffeId:     k.spiffeID(*krbClient.Credentials).String(),
+		AttestationData: data,
+		SpiffeId:        k.spiffeID(*krbClient.Credentials).String(),
 	}
 
-	return resp, nil
+	if err := stream.Send(resp); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (k *KrbAttestorPlugin) Configure(ctx context.Context, req *spi.ConfigureRequest) (*spi.ConfigureResponse, error) {
@@ -185,7 +182,11 @@ func (k *KrbAttestorPlugin) GetPluginInfo(context.Context, *spi.GetPluginInfoReq
 func main() {
 	plugin.Serve(&plugin.ServeConfig{
 		Plugins: map[string]plugin.Plugin{
-			pluginName: nodeattestor.NodeAttestorPlugin{NodeAttestorImpl: New()},
+			pluginName: nodeattestor.GRPCPlugin{
+				ServerImpl: &nodeattestor.GRPCServer{
+					Plugin: New(),
+				},
+			},
 		},
 		HandshakeConfig: nodeattestor.Handshake,
 		GRPCServer:      plugin.DefaultGRPCServer,

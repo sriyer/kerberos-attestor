@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/gob"
+	"errors"
 	"fmt"
 	"net/url"
 	"path"
@@ -59,35 +60,40 @@ func (k *KrbAttestorPlugin) spiffeID(krbCreds gokrb_creds.Credentials) *url.URL 
 	return id
 }
 
-func (k *KrbAttestorPlugin) Attest(ctx context.Context, req *nodeattestor.AttestRequest) (*nodeattestor.AttestResponse, error) {
+func (k *KrbAttestorPlugin) Attest(stream nodeattestor.Attest_PluginStream) error {
 	var attestedData krbc.KrbAttestedData
 	var buf bytes.Buffer
 
-	buf.Write(req.AttestedData.Data)
-	dec := gob.NewDecoder(&buf)
-	err := dec.Decode(&attestedData)
+	req, err := stream.Recv()
 	if err != nil {
-		err = krbc.AttestationStepError("decoding KRB_AP_REQ from attestation data", err)
-		return &nodeattestor.AttestResponse{Valid: false}, err
+		return err
+	}
+
+	buf.Write(req.AttestationData.Data)
+	dec := gob.NewDecoder(&buf)
+	err = dec.Decode(&attestedData)
+	if err != nil {
+		return krbc.AttestationStepError("decoding KRB_AP_REQ from attestation data", err)
 	}
 
 	valid, creds, err := gokrb_service.ValidateAPREQ(attestedData.KrbAPReq, k.keytab, k.spireSPN, "0", false)
 	if err != nil {
-		err = krbc.AttestationStepError("validating KRB_AP_REQ", err)
-		return &nodeattestor.AttestResponse{Valid: false}, err
+		return krbc.AttestationStepError("validating KRB_AP_REQ", err)
 	}
 
-	if valid {
-		resp := &nodeattestor.AttestResponse{
-			Valid:        true,
-			BaseSPIFFEID: k.spiffeID(creds).String(),
-		}
-
-		return resp, nil
+	if !valid {
+		return krbc.AttestationStepError("validating KRB_AP_REQ", errors.New("failed to validate KRB_AP_REQ"))
 	}
 
-	err = krbc.AttestationStepError("validating KRB_AP_REQ", fmt.Errorf("failed to validate KRB_AP_REQ"))
-	return &nodeattestor.AttestResponse{Valid: false}, err
+	err = stream.Send(&nodeattestor.AttestResponse{
+		Valid:        true,
+		BaseSPIFFEID: k.spiffeID(creds).String(),
+	})
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (k *KrbAttestorPlugin) Configure(ctx context.Context, req *spi.ConfigureRequest) (*spi.ConfigureResponse, error) {
@@ -142,7 +148,11 @@ func (k *KrbAttestorPlugin) GetPluginInfo(context.Context, *spi.GetPluginInfoReq
 func main() {
 	plugin.Serve(&plugin.ServeConfig{
 		Plugins: map[string]plugin.Plugin{
-			pluginName: nodeattestor.NodeAttestorPlugin{NodeAttestorImpl: New()},
+			pluginName: nodeattestor.GRPCPlugin{
+				ServerImpl: &nodeattestor.GRPCServer{
+					Plugin: New(),
+				},
+			},
 		},
 		HandshakeConfig: nodeattestor.Handshake,
 		GRPCServer:      plugin.DefaultGRPCServer,
