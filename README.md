@@ -134,7 +134,7 @@ cd <SPIRE Installation Directory>
 ./spire-server run
 ```
 
-**SPIRE Server**
+**SPIRE Agent**
 
 ```bash
 cd <SPIRE Installation Directory>
