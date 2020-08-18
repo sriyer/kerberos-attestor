@@ -1,4 +1,4 @@
-module github.com/yangmarcyang/kerberos-attestor
+module github.com/spiffe/kerberos-attestor
 
 go 1.13
 

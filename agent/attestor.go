@@ -20,7 +20,7 @@ import (
 	spc "github.com/spiffe/spire/proto/spire/common"
 	spi "github.com/spiffe/spire/proto/spire/common/plugin"
 
-	"github.com/yangmarcyang/kerberos-attestor/common"
+	"github.com/spiffe/kerberos-attestor/common"
 )
 
 func BuiltIn() catalog.Plugin {
