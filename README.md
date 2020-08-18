@@ -36,19 +36,13 @@ Running the following commands will download, build, and install the Kerberos-At
   cd ${GOPATH}/src/github.com/spiffe/kerberos-attestor
   ```
 
-2. Install dependencies:
-
-  ```bash
-  make vendor
-  ```
-
-3. Build the Kerberos-Attestor:
+2. Build the Kerberos-Attestor:
 
   ```bash
   make build
   ```
 
-4. Binaries for the server and agent should be in the `bin/` directory
+3. Binaries for the server and agent should be in the `bin/` directory
 
 Installation and Configuration
 --
