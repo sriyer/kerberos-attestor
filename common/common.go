@@ -1,19 +1,18 @@
 package common
 
 import (
-	"fmt"
-
-	gokrb_msgs "github.com/nks5295/gokrb5/messages"
+	"github.com/zeebo/errs"
+	"gopkg.in/jcmturner/gokrb5.v7/messages"
 )
 
 const (
-	SPIREServiceName = "host"
+	PluginName = "kerberos"
+)
+
+var (
+	PluginErr = errs.Class(PluginName)
 )
 
 type KrbAttestedData struct {
-	KrbAPReq gokrb_msgs.APReq
-}
-
-func AttestationStepError(step string, cause error) error {
-	return fmt.Errorf("Attempted Kerberos attestation, but an error occured: %s: %s", step, cause)
+	KrbAPReq messages.APReq
 }
