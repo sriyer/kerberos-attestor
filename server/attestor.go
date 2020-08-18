@@ -18,7 +18,7 @@ import (
 	gokrbkeytab "gopkg.in/jcmturner/gokrb5.v7/keytab"
 	gokrbservice "gopkg.in/jcmturner/gokrb5.v7/service"
 
-	"github.com/yangmarcyang/kerberos-attestor/common"
+	"github.com/spiffe/kerberos-attestor/common"
 )
 
 const (
