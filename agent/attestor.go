@@ -15,21 +15,14 @@ import (
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/hcl"
-	"github.com/spiffe/spire/pkg/agent/plugin/nodeattestor"
-	"github.com/spiffe/spire/pkg/common/catalog"
-	spc "github.com/spiffe/spire/proto/spire/common"
-	spi "github.com/spiffe/spire/proto/spire/common/plugin"
+
+	nodeattestorv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/plugin/agent/nodeattestor/v1"
+	configv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/service/common/config/v1"
+
+	"github.com/spiffe/spire-plugin-sdk/pluginmain"
 
 	"github.com/spiffe/kerberos-attestor/common"
 )
-
-func BuiltIn() catalog.Plugin {
-	return builtin(New())
-}
-
-func builtin(p *Plugin) catalog.Plugin {
-	return catalog.MakePlugin(common.PluginName, nodeattestor.PluginServer(p))
-}
 
 type Config struct {
 	KrbRealm      string `hcl:"krb_realm"`
@@ -39,6 +32,8 @@ type Config struct {
 }
 
 type Plugin struct {
+	nodeattestorv1.UnsafeNodeAttestorServer
+	configv1.UnsafeConfigServer
 	mu        sync.Mutex
 	log       hclog.Logger
 	realm     string
@@ -48,8 +43,6 @@ type Plugin struct {
 	spn       string
 }
 
-var _ catalog.NeedsLogger = (*Plugin)(nil)
-
 func New() *Plugin {
 	return &Plugin{}
 }
@@ -58,7 +51,7 @@ func (p *Plugin) SetLogger(log hclog.Logger) {
 	p.log = log
 }
 
-func (p *Plugin) FetchAttestationData(stream nodeattestor.NodeAttestor_FetchAttestationDataServer) (err error) {
+func (p *Plugin) AidAttestation(stream nodeattestorv1.NodeAttestor_AidAttestationServer) (err error) {
 	client := gokrbclient.NewClientWithKeytab(p.username, p.realm, p.keytab, p.krbConfig)
 	defer client.Destroy()
 
@@ -105,10 +98,9 @@ func (p *Plugin) FetchAttestationData(stream nodeattestor.NodeAttestor_FetchAtte
 		return common.PluginErr.New("marshaling KRB_AP_REQ for transport: %v", err)
 	}
 
-	resp := &nodeattestor.FetchAttestationDataResponse{
-		AttestationData: &spc.AttestationData{
-			Type: common.PluginName,
-			Data: data,
+	resp := &nodeattestorv1.PayloadOrChallengeResponse{
+		Data: &nodeattestorv1.PayloadOrChallengeResponse_Payload{
+			Payload: data,
 		},
 	}
 
@@ -119,9 +111,9 @@ func (p *Plugin) FetchAttestationData(stream nodeattestor.NodeAttestor_FetchAtte
 	return nil
 }
 
-func (p *Plugin) Configure(ctx context.Context, req *spi.ConfigureRequest) (*spi.ConfigureResponse, error) {
+func (p *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) (*configv1.ConfigureResponse, error) {
 	config := new(Config)
-	if err := hcl.Decode(config, req.Configuration); err != nil {
+	if err := hcl.Decode(config, req.HclConfiguration); err != nil {
 		return nil, common.PluginErr.New("unable to decode configuration: %v", err)
 	}
 
@@ -144,11 +136,7 @@ func (p *Plugin) Configure(ctx context.Context, req *spi.ConfigureRequest) (*spi
 	p.username = getPrincipalName(krbKt)
 	p.spn = config.Spn
 
-	return &spi.ConfigureResponse{}, nil
-}
-
-func (p *Plugin) GetPluginInfo(ctx context.Context, req *spi.GetPluginInfoRequest) (*spi.GetPluginInfoResponse, error) {
-	return &spi.GetPluginInfoResponse{}, nil
+	return &configv1.ConfigureResponse{}, nil
 }
 
 func getPrincipalName(kt *gokrbkeytab.Keytab) string {
@@ -160,5 +148,6 @@ func getPrincipalName(kt *gokrbkeytab.Keytab) string {
 }
 
 func main() {
-	catalog.PluginMain(BuiltIn())
+	p := New()
+	pluginmain.Serve(nodeattestorv1.NodeAttestorPluginServer(p), configv1.ConfigServiceServer(p))
 }

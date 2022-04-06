@@ -3,20 +3,23 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"path"
 	"sync"
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/hcl"
-	"github.com/spiffe/spire/pkg/common/catalog"
-	"github.com/spiffe/spire/pkg/server/plugin/nodeattestor"
-	spc "github.com/spiffe/spire/proto/spire/common"
-	spi "github.com/spiffe/spire/proto/spire/common/plugin"
+
 	gokrbconfig "gopkg.in/jcmturner/gokrb5.v7/config"
 	gokrbcreds "gopkg.in/jcmturner/gokrb5.v7/credentials"
 	gokrbkeytab "gopkg.in/jcmturner/gokrb5.v7/keytab"
 	gokrbservice "gopkg.in/jcmturner/gokrb5.v7/service"
+
+	nodeattestorv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/plugin/server/nodeattestor/v1"
+	configv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/service/common/config/v1"
+
+	"github.com/spiffe/spire-plugin-sdk/pluginmain"
 
 	"github.com/spiffe/kerberos-attestor/common"
 )
@@ -25,14 +28,6 @@ const (
 	defaultSpiffeScheme = "spiffe"
 )
 
-func BuiltIn() catalog.Plugin {
-	return builtin(New())
-}
-
-func builtin(p *Plugin) catalog.Plugin {
-	return catalog.MakePlugin(common.PluginName, nodeattestor.PluginServer(p))
-}
-
 type Config struct {
 	KrbRealm      string `hcl:"krb_realm"`
 	KrbConfPath   string `hcl:"krb_conf_path"`
@@ -40,6 +35,8 @@ type Config struct {
 }
 
 type Plugin struct {
+	nodeattestorv1.UnsafeNodeAttestorServer
+	configv1.UnsafeConfigServer
 	mu          sync.Mutex
 	log         hclog.Logger
 	realm       string
@@ -47,8 +44,6 @@ type Plugin struct {
 	keytab      *gokrbkeytab.Keytab
 	trustDomain string
 }
-
-var _ catalog.NeedsLogger = (*Plugin)(nil)
 
 func New() *Plugin {
 	return &Plugin{}
@@ -68,14 +63,14 @@ func (p *Plugin) spiffeID(krbCreds *gokrbcreds.Credentials) *url.URL {
 	return id
 }
 
-func (p *Plugin) Attest(stream nodeattestor.NodeAttestor_AttestServer) error {
+func (p *Plugin) Attest(stream nodeattestorv1.NodeAttestor_AttestServer) error {
 	req, err := stream.Recv()
 	if err != nil {
 		return err
 	}
 
 	attestedData := new(common.KrbAttestedData)
-	if err := json.Unmarshal(req.AttestationData.Data, attestedData); err != nil {
+	if err := json.Unmarshal(req.GetPayload(), attestedData); err != nil {
 		return common.PluginErr.New("unmarshaling KRB_AP_REQ from attestation data: %v", err)
 	}
 
@@ -90,23 +85,27 @@ func (p *Plugin) Attest(stream nodeattestor.NodeAttestor_AttestServer) error {
 		return common.PluginErr.New("failed to validate KRB_AP_REQ")
 	}
 
-	return stream.Send(&nodeattestor.AttestResponse{
-		AgentId:   p.spiffeID(creds).String(),
-		Selectors: buildSelectors(creds.CName().PrincipalNameString()),
+	return stream.Send(&nodeattestorv1.AttestResponse{
+		Response: &nodeattestorv1.AttestResponse_AgentAttributes{
+			AgentAttributes: &nodeattestorv1.AgentAttributes{
+				SpiffeId:       p.spiffeID(creds).String(),
+				SelectorValues: buildSelectors(creds.CName().PrincipalNameString()),
+			},
+		},
 	})
 }
 
-func (p *Plugin) Configure(ctx context.Context, req *spi.ConfigureRequest) (*spi.ConfigureResponse, error) {
+func (p *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) (*configv1.ConfigureResponse, error) {
 	config := new(Config)
-	if err := hcl.Decode(config, req.Configuration); err != nil {
+	if err := hcl.Decode(config, req.HclConfiguration); err != nil {
 		return nil, common.PluginErr.New("unable to decode configuration: %v", err)
 	}
 
-	if req.GlobalConfig == nil {
+	if req.GetCoreConfiguration() == nil {
 		return nil, common.PluginErr.New("global configuration is required")
 	}
 
-	if req.GlobalConfig.TrustDomain == "" {
+	if req.GetCoreConfiguration().GetTrustDomain() == "" {
 		return nil, common.PluginErr.New("trust_domain is required")
 	}
 
@@ -126,25 +125,19 @@ func (p *Plugin) Configure(ctx context.Context, req *spi.ConfigureRequest) (*spi
 	p.realm = config.KrbRealm
 	p.krbConfig = krbCfg
 	p.keytab = krbKt
-	p.trustDomain = req.GlobalConfig.TrustDomain
+	p.trustDomain = req.GetCoreConfiguration().GetTrustDomain()
 
-	return &spi.ConfigureResponse{}, nil
+	return &configv1.ConfigureResponse{}, nil
 }
 
-func (p *Plugin) GetPluginInfo(context.Context, *spi.GetPluginInfoRequest) (*spi.GetPluginInfoResponse, error) {
-	return &spi.GetPluginInfoResponse{}, nil
-}
+func buildSelectors(principalName string) []string {
 
-func buildSelectors(principalName string) []*spc.Selector {
-	selectors := []*spc.Selector{}
+	return []string{fmt.Sprintf("pn:%s", principalName)}
 
-	selectors = append(selectors, &spc.Selector{
-		Type: common.PluginName, Value: "pn:" + principalName,
-	})
-
-	return selectors
 }
 
 func main() {
-	catalog.PluginMain(BuiltIn())
+	p := New()
+	pluginmain.Serve(nodeattestorv1.NodeAttestorPluginServer(p), configv1.ConfigServiceServer(p))
+
 }

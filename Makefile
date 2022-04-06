@@ -6,7 +6,7 @@ out_dir := bin
 build: $(binary_dirs)
 
 $(binary_dirs): noop
-	cd $@ && go build -o ../$(out_dir)/$@ -i
+	cd $@ && go mod vendor && go build -mod=vendor -o ../$(out_dir)/$@
 
 test:
 	go test -race ./...
